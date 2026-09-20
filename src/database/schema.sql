@@ -122,6 +122,92 @@ CREATE TABLE IF NOT EXISTS campaign_templates (
   INDEX idx_is_active (is_active)
 );
 
+-- Behavior Tracking Table (page views, scrolls, interactions)
+CREATE TABLE IF NOT EXISTS behavior_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  visitor_id UUID REFERENCES visitors(id) ON DELETE CASCADE,
+  event_type VARCHAR NOT NULL, -- 'page_view', 'scroll', 'click', 'form_interaction', 'time_spent'
+  page_url VARCHAR,
+  page_title VARCHAR,
+  section VARCHAR, -- 'pricing', 'features', 'case_studies', etc.
+  duration_seconds INTEGER, -- time spent on page/section
+  scroll_depth_percent INTEGER,
+  metadata JSONB DEFAULT '{}'::jsonb, -- device, browser, referrer, etc.
+  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  session_id VARCHAR, -- group events into sessions
+  INDEX idx_visitor_id (visitor_id),
+  INDEX idx_event_type (event_type),
+  INDEX idx_timestamp (timestamp),
+  INDEX idx_session_id (session_id)
+);
+
+-- Incentives Table (discounts, free upgrades, perks)
+CREATE TABLE IF NOT EXISTS incentives (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  campaign_id UUID REFERENCES retargeting_campaigns(id) ON DELETE CASCADE,
+  visitor_id UUID REFERENCES visitors(id) ON DELETE CASCADE,
+  incentive_type VARCHAR NOT NULL, -- 'discount_percent', 'free_month', 'premium_support', 'extended_trial'
+  incentive_value VARCHAR NOT NULL, -- '10' for 10%, 'yes' for free month, etc.
+  display_name VARCHAR NOT NULL, -- "10% Off", "Free Month of Premium Support"
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  expires_at TIMESTAMP,
+  is_applied BOOLEAN DEFAULT false,
+  applied_at TIMESTAMP,
+  INDEX idx_campaign_id (campaign_id),
+  INDEX idx_visitor_id (visitor_id),
+  INDEX idx_incentive_type (incentive_type),
+  INDEX idx_expires_at (expires_at)
+);
+
+-- Quote Recovery Links (persistent links to view/recover quotes)
+CREATE TABLE IF NOT EXISTS quote_recovery_links (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  campaign_id UUID REFERENCES retargeting_campaigns(id) ON DELETE CASCADE,
+  quote_id UUID REFERENCES quotes(id) ON DELETE CASCADE,
+  visitor_id UUID REFERENCES visitors(id) ON DELETE CASCADE,
+  recovery_url VARCHAR UNIQUE NOT NULL, -- e.g., /recover/abc123
+  recovery_token VARCHAR UNIQUE NOT NULL,
+  includes_discount BOOLEAN DEFAULT false,
+  discount_percent DECIMAL(5, 2),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  expires_at TIMESTAMP,
+  first_visited_at TIMESTAMP,
+  converted_at TIMESTAMP,
+  INDEX idx_recovery_token (recovery_token),
+  INDEX idx_visitor_id (visitor_id),
+  INDEX idx_campaign_id (campaign_id)
+);
+
+-- Campaign Copy Variants (A/B testing different messages)
+CREATE TABLE IF NOT EXISTS campaign_copy_variants (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  campaign_id UUID REFERENCES retargeting_campaigns(id) ON DELETE CASCADE,
+  variant_name VARCHAR NOT NULL, -- 'variant_a', 'variant_b', 'control'
+  channel VARCHAR NOT NULL,
+  copy_data JSONB NOT NULL, -- contains subject, body, headline, etc for channel
+  is_selected BOOLEAN DEFAULT false,
+  performance_metrics JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_campaign_id (campaign_id),
+  INDEX idx_variant_name (variant_name),
+  INDEX idx_channel (channel)
+);
+
+-- Operator Audit Log (track all approvals, modifications, rejections)
+CREATE TABLE IF NOT EXISTS operator_audit_log (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  campaign_id UUID REFERENCES retargeting_campaigns(id) ON DELETE CASCADE,
+  operator_email VARCHAR NOT NULL,
+  action VARCHAR NOT NULL, -- 'approved', 'rejected', 'modified', 'viewed'
+  changes JSONB, -- what was changed
+  notes TEXT,
+  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_campaign_id (campaign_id),
+  INDEX idx_operator_email (operator_email),
+  INDEX idx_action (action),
+  INDEX idx_timestamp (timestamp)
+);
+
 -- Create indexes
 CREATE INDEX idx_visitors_email ON visitors(email);
 CREATE INDEX idx_visitors_created_at ON visitors(created_at);
@@ -133,3 +219,6 @@ CREATE INDEX idx_engagement_visitor ON engagement_log(visitor_id);
 CREATE INDEX idx_engagement_campaign ON engagement_log(campaign_id);
 CREATE INDEX idx_engagement_channel ON engagement_log(channel);
 CREATE INDEX idx_engagement_action ON engagement_log(action);
+CREATE INDEX idx_behavior_visitor ON behavior_events(visitor_id);
+CREATE INDEX idx_behavior_event_type ON behavior_events(event_type);
+CREATE INDEX idx_behavior_timestamp ON behavior_events(timestamp);

@@ -33,7 +33,8 @@
     "redis": "^4.6.0",
     "twilio": "^3.91.0",
     "node-mailgun": "^0.6.0",
-    "axios-retry": "^3.4.0"
+    "axios-retry": "^3.4.0",
+    "uuid": "^9.0.0"
   },
   "devDependencies": {
     "eslint": "^8.51.0",
