@@ -2,9 +2,6 @@ const express = require('express');
 const { Pool } = require('pg');
 const router = express.Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-const RetargetingAgent = require('../agent/RetargetingAgent');
-
-const agent = new RetargetingAgent();
 
 /**
  * GET /campaigns/pending-approval
