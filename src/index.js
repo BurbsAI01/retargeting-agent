@@ -7,6 +7,8 @@ const redis = require('redis');
 const Queue = require('bull');
 
 const RetargetingAgent = require('./agent/RetargetingAgent');
+const campaignsRouter = require('./routes/campaigns');
+const trackingRouter = require('./routes/tracking');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -35,6 +37,10 @@ const retargetingQueue = new Queue('retargeting-campaigns', {
 
 // Initialize agent
 const agent = new RetargetingAgent();
+
+// Mount routes
+app.use('/campaigns', campaignsRouter);
+app.use('/tracking', trackingRouter);
 
 // Health check
 app.get('/health', (req, res) => {
@@ -97,92 +103,6 @@ app.post('/webhooks/visitor-event', async (req, res) => {
   }
 });
 
-/**
- * Endpoint: Get pending campaigns for operator approval
- */
-app.get('/campaigns/pending-approval', async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT c.*, v.email, v.first_name, v.company_name, q.quote_details
-       FROM retargeting_campaigns c
-       JOIN visitors v ON c.visitor_id = v.id
-       JOIN quotes q ON c.quote_id = q.id
-       WHERE c.campaign_status = 'pending_approval'
-       ORDER BY c.created_at DESC
-       LIMIT 50`
-    );
-
-    res.json(result.rows);
-  } catch (error) {
-    console.error('Error fetching campaigns:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * Endpoint: Approve campaign (operator action)
- */
-app.post('/campaigns/:campaignId/approve', async (req, res) => {
-  try {
-    const { campaignId } = req.params;
-    const { operator_email, discount_percent, channels, copy_overrides } =
-      req.body;
-
-    const modifications = {
-      discount_percent,
-      channels,
-      ...copy_overrides,
-    };
-
-    await pool.query(
-      `UPDATE retargeting_campaigns
-       SET campaign_status = 'approved',
-           approved_at = CURRENT_TIMESTAMP,
-           approved_by = $1,
-           operator_modifications = $2
-       WHERE id = $3`,
-      [operator_email, JSON.stringify(modifications), campaignId]
-    );
-
-    // Queue dispatch job
-    await retargetingQueue.add(
-      { campaignId, action: 'dispatch' },
-      { attempts: 3 }
-    );
-
-    res.json({ success: true, campaignId });
-  } catch (error) {
-    console.error('Error approving campaign:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * Endpoint: Reject campaign
- */
-app.post('/campaigns/:campaignId/reject', async (req, res) => {
-  try {
-    const { campaignId } = req.params;
-    const { operator_email, reason } = req.body;
-
-    await pool.query(
-      `UPDATE retargeting_campaigns
-       SET campaign_status = 'rejected',
-           operator_modifications = jsonb_set(
-             operator_modifications,
-             '{rejection_reason}',
-             $1::jsonb
-           )
-       WHERE id = $2`,
-      [JSON.stringify(reason), campaignId]
-    );
-
-    res.json({ success: true, campaignId });
-  } catch (error) {
-    console.error('Error rejecting campaign:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
 
 /**
  * Bull job processor: Generate campaign recommendations
