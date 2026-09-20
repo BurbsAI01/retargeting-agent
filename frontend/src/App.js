@@ -6,6 +6,7 @@ import Header from './components/Header';
 import CampaignQueue from './pages/CampaignQueue';
 import CampaignDetail from './pages/CampaignDetail';
 import Analytics from './pages/Analytics';
+import Recovery from './pages/Recovery';
 import './styles/App.css';
 
 export default function App() {
@@ -14,25 +15,36 @@ export default function App() {
 
   return (
     <Router>
-      <div className="flex h-screen bg-gray-50">
-        {/* Sidebar */}
-        <Sidebar />
+      <Routes>
+        {/* Public recovery landing page */}
+        <Route path="/recover/:token" element={<Recovery />} />
 
-        {/* Main Content */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Header */}
-          <Header />
+        {/* Dashboard routes */}
+        <Route
+          path="/*"
+          element={
+            <div className="flex h-screen bg-gray-50">
+              {/* Sidebar */}
+              <Sidebar />
 
-          {/* Page Content */}
-          <main className="flex-1 overflow-auto p-8">
-            <Routes>
-              <Route path="/" element={<CampaignQueue />} />
-              <Route path="/campaigns/:id" element={<CampaignDetail />} />
-              <Route path="/analytics" element={<Analytics />} />
-            </Routes>
-          </main>
-        </div>
-      </div>
+              {/* Main Content */}
+              <div className="flex-1 flex flex-col overflow-hidden">
+                {/* Header */}
+                <Header />
+
+                {/* Page Content */}
+                <main className="flex-1 overflow-auto p-8">
+                  <Routes>
+                    <Route path="/" element={<CampaignQueue />} />
+                    <Route path="/campaigns/:id" element={<CampaignDetail />} />
+                    <Route path="/analytics" element={<Analytics />} />
+                  </Routes>
+                </main>
+              </div>
+            </div>
+          }
+        />
+      </Routes>
     </Router>
   );
 }

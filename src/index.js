@@ -14,6 +14,7 @@ const FacebookWebhookHandler = require('./webhooks/FacebookWebhookHandler');
 const ConversionWebhookHandler = require('./webhooks/ConversionWebhookHandler');
 const campaignsRouter = require('./routes/campaigns');
 const trackingRouter = require('./routes/tracking');
+const recoveryRouter = require('./routes/recovery');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -51,6 +52,7 @@ const conversionWebhookHandler = new ConversionWebhookHandler(pool);
 // Mount routes
 app.use('/campaigns', campaignsRouter);
 app.use('/tracking', trackingRouter);
+app.use('/recovery', recoveryRouter);
 
 // Health check
 app.get('/health', (req, res) => {
