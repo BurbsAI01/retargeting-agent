@@ -7,6 +7,7 @@ const redis = require('redis');
 const Queue = require('bull');
 
 const RetargetingAgent = require('./agent/RetargetingAgent');
+const DispatchEngine = require('./services/DispatchEngine');
 const campaignsRouter = require('./routes/campaigns');
 const trackingRouter = require('./routes/tracking');
 
@@ -35,8 +36,9 @@ const retargetingQueue = new Queue('retargeting-campaigns', {
   redis: process.env.REDIS_URL,
 });
 
-// Initialize agent
+// Initialize services
 const agent = new RetargetingAgent();
+const dispatchEngine = new DispatchEngine(pool);
 
 // Mount routes
 app.use('/campaigns', campaignsRouter);
@@ -105,79 +107,221 @@ app.post('/webhooks/visitor-event', async (req, res) => {
 
 
 /**
- * Bull job processor: Generate campaign recommendations
+ * Bull job processor: Handle multiple job types (campaign generation and dispatch)
  */
-retargetingQueue.process('retargeting-campaigns', async (job) => {
-  const { visitorId, quoteId, email } = job.data;
+retargetingQueue.process(async (job) => {
+  const { action, visitorId, quoteId, email, campaignId } = job.data;
 
   try {
-    const visitorResult = await pool.query(
-      'SELECT * FROM visitors WHERE id = $1',
-      [visitorId]
-    );
-    const visitor = visitorResult.rows[0];
+    // Job type 1: Generate campaign recommendations (default)
+    if (!action || action === 'generate') {
+      const visitorResult = await pool.query(
+        'SELECT * FROM visitors WHERE id = $1',
+        [visitorId]
+      );
+      const visitor = visitorResult.rows[0];
 
-    const quoteResult = await pool.query(
-      'SELECT * FROM quotes WHERE id = $1',
-      [quoteId]
-    );
-    const quote = quoteResult.rows[0];
+      const quoteResult = await pool.query(
+        'SELECT * FROM quotes WHERE id = $1',
+        [quoteId]
+      );
+      const quote = quoteResult.rows[0];
 
-    // Calculate lead temperature
-    const temperatureScore = agent.calculateLeadTemperature(visitor, quote, {
-      pages_visited: [],
-      interacted_with_chat: false,
-    });
+      // Calculate lead temperature
+      const temperatureScore = agent.calculateLeadTemperature(visitor, quote, {
+        pages_visited: [],
+        interacted_with_chat: false,
+      });
 
-    // Get operator config (default)
-    const operatorConfig = {
-      max_discount_percent:
-        parseInt(process.env.DEFAULT_MAX_DISCOUNT_PERCENT) || 15,
-      enable_sms: true,
-      enable_facebook: process.env.ENABLE_FACEBOOK_RETARGETING === 'true',
-      enable_google_ads: process.env.ENABLE_GOOGLE_ADS_RETARGETING === 'true',
-      enable_linkedin: process.env.ENABLE_LINKEDIN_RETARGETING === 'true',
-      require_approval_for_discount_above_percent: parseInt(
-        process.env.REQUIRE_APPROVAL_FOR_DISCOUNT_ABOVE_PERCENT
-      ),
-    };
-
-    // Generate campaign recommendation
-    const recommendation = await agent.generateCampaignRecommendation(
-      visitor,
-      quote,
-      {
-        temperatureScore,
-        daysSinceQuote: Math.floor(
-          (Date.now() - new Date(quote.generated_at)) / (1000 * 60 * 60 * 24)
+      // Get operator config
+      const operatorConfig = {
+        max_discount_percent:
+          parseInt(process.env.DEFAULT_MAX_DISCOUNT_PERCENT) || 15,
+        enable_sms: process.env.ENABLE_SMS_RETARGETING !== 'false',
+        enable_facebook: process.env.ENABLE_FACEBOOK_RETARGETING === 'true',
+        enable_google_ads: process.env.ENABLE_GOOGLE_ADS_RETARGETING === 'true',
+        enable_linkedin: process.env.ENABLE_LINKEDIN_RETARGETING === 'true',
+        require_approval_for_discount_above_percent: parseInt(
+          process.env.REQUIRE_APPROVAL_FOR_DISCOUNT_ABOVE_PERCENT
         ),
-        campaign_id: job.id,
-      },
-      operatorConfig
-    );
+      };
 
-    // Save campaign to database
-    const campaignResult = await pool.query(
-      `INSERT INTO retargeting_campaigns (visitor_id, quote_id, agent_recommendation, campaign_status)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id`,
-      [
-        visitorId,
-        quoteId,
-        JSON.stringify(recommendation),
-        recommendation.approval_required ? 'pending_approval' : 'ready_to_send',
-      ]
-    );
+      // Generate campaign recommendation
+      const recommendation = await agent.generateCampaignRecommendation(
+        visitor,
+        quote,
+        {
+          temperatureScore,
+          daysSinceQuote: Math.floor(
+            (Date.now() - new Date(quote.generated_at)) / (1000 * 60 * 60 * 24)
+          ),
+          campaign_id: job.id,
+        },
+        operatorConfig
+      );
 
-    console.log(
-      `Campaign generated for ${email}:`,
-      campaignResult.rows[0].id
-    );
+      // Save campaign to database
+      const campaignResult = await pool.query(
+        `INSERT INTO retargeting_campaigns (visitor_id, quote_id, agent_recommendation, campaign_status)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id`,
+        [
+          visitorId,
+          quoteId,
+          JSON.stringify(recommendation),
+          recommendation.approval_required ? 'pending_approval' : 'ready_to_send',
+        ]
+      );
 
-    return { success: true, campaignId: campaignResult.rows[0].id };
+      console.log(
+        `Campaign generated for ${email}:`,
+        campaignResult.rows[0].id
+      );
+
+      return { success: true, campaignId: campaignResult.rows[0].id };
+    }
+
+    // Job type 2: Dispatch campaign
+    if (action === 'dispatch') {
+      console.log(`Processing dispatch job for campaign ${campaignId}`);
+      const dispatchResult = await dispatchEngine.dispatchCampaign(campaignId);
+      return dispatchResult;
+    }
+
+    throw new Error(`Unknown job action: ${action}`);
   } catch (error) {
     console.error('Error processing retargeting job:', error);
     throw error;
+  }
+});
+
+/**
+ * GET /dispatch/campaign/:campaignId/status
+ * Get dispatch status for a campaign
+ */
+app.get('/dispatch/campaign/:campaignId/status', async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+    const status = await dispatchEngine.getDispatchStatus(campaignId);
+    res.json(status);
+  } catch (error) {
+    console.error('Error getting dispatch status:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /dispatch/campaign/:campaignId/send
+ * Manually trigger dispatch for an approved campaign
+ */
+app.post('/dispatch/campaign/:campaignId/send', async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+
+    // Check campaign status
+    const campaignResult = await pool.query(
+      'SELECT campaign_status FROM retargeting_campaigns WHERE id = $1',
+      [campaignId]
+    );
+
+    if (campaignResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    const campaign = campaignResult.rows[0];
+    if (campaign.campaign_status !== 'approved') {
+      return res.status(400).json({
+        error: `Campaign must be approved to dispatch. Current status: ${campaign.campaign_status}`,
+      });
+    }
+
+    // Queue dispatch job
+    await retargetingQueue.add(
+      { campaignId, action: 'dispatch' },
+      {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 2000,
+        },
+        removeOnComplete: false,
+        removeOnFail: false,
+      }
+    );
+
+    res.json({
+      success: true,
+      campaignId,
+      message: 'Campaign queued for dispatch',
+    });
+  } catch (error) {
+    console.error('Error queuing dispatch:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /dispatch/bulk-send
+ * Dispatch all ready_to_send campaigns
+ */
+app.post('/dispatch/bulk-send', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id FROM retargeting_campaigns
+       WHERE campaign_status = 'ready_to_send'
+       ORDER BY created_at ASC
+       LIMIT 100`
+    );
+
+    const campaigns = result.rows;
+    const queuedJobs = [];
+
+    for (const campaign of campaigns) {
+      const job = await retargetingQueue.add(
+        { campaignId: campaign.id, action: 'dispatch' },
+        {
+          attempts: 3,
+          backoff: {
+            type: 'exponential',
+            delay: 2000,
+          },
+          removeOnComplete: false,
+          removeOnFail: false,
+        }
+      );
+      queuedJobs.push({ campaignId: campaign.id, jobId: job.id });
+    }
+
+    res.json({
+      success: true,
+      campaigns_queued: campaigns.length,
+      jobs: queuedJobs,
+      message: `Queued ${campaigns.length} campaigns for dispatch`,
+    });
+  } catch (error) {
+    console.error('Error bulk dispatching:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /dispatch/queue/stats
+ * Get job queue statistics
+ */
+app.get('/dispatch/queue/stats', async (req, res) => {
+  try {
+    const counts = await retargetingQueue.getJobCounts();
+    const active = await retargetingQueue.getActiveCount();
+    const delayed = await retargetingQueue.getDelayedCount();
+
+    res.json({
+      active,
+      delayed,
+      ...counts,
+    });
+  } catch (error) {
+    console.error('Error getting queue stats:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
