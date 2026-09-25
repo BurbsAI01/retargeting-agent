@@ -110,55 +110,111 @@ app.post('/admin/sync/quotebot', async (req, res) => {
 });
 
 /**
- * Webhook: Receive visitor event (quote generated, no conversion)
+ * Webhook: Receive visitor event (website visitor or quote generated)
+ * Handles two distinct visitor types:
+ * 1. website_visitor: Anyone who lands on site → immediate retarget
+ * 2. quote_generated: Someone who generated a quote → retarget after 30min
  */
 app.post('/webhooks/visitor-event', apiKeyAuth.middleware(), async (req, res) => {
   try {
-    const { visitorId, email, phone, company, event_type, quote_data } =
-      req.body;
+    let { visitorId, email, phone, company, event_type, quote_data, visitor_data } = req.body;
 
-    if (event_type === 'quote_generated' && !quote_data.converted) {
-      // Store visitor and quote
-      const visitorResult = await pool.query(
-        `INSERT INTO visitors (id, email, phone, company_name, last_active)
-         VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-         ON CONFLICT (email) DO UPDATE SET last_active = CURRENT_TIMESTAMP
-         RETURNING id`,
-        [visitorId, email, phone, company]
-      );
+    // Generate UUID for website visitors if not provided
+    if (!visitorId && event_type === 'website_visitor') {
+      const { v4: uuidv4 } = require('uuid');
+      visitorId = uuidv4();
+    }
 
-      const finalVisitorId = visitorResult.rows[0].id;
+    // Determine visitor type and campaign delay
+    let visitorType = 'website_visitor';
+    let campaignDelay = 0; // Immediate for website visitors
+    let isQuote = false;
+    let quoteId = null;
 
+    // Handle quote generator events
+    if (event_type === 'quote_generated') {
+      if (quote_data?.converted) {
+        return res.json({ success: false, reason: 'Quote already converted' });
+      }
+      visitorType = 'quote_generator';
+      campaignDelay = 30 * 60 * 1000; // 30 minutes for quotes
+      isQuote = true;
+    }
+    // Handle website visitor events
+    else if (event_type === 'website_visitor' || event_type === 'website_visitor_email_captured') {
+      visitorType = 'website_visitor';
+      campaignDelay = 0; // Immediate
+      isQuote = false;
+    }
+    // Skip other events
+    else {
+      return res.json({ success: false, reason: `Unknown event type: ${event_type}` });
+    }
+
+    // Create or update visitor with visitor type
+    const visitorResult = await pool.query(
+      `INSERT INTO visitors (id, email, phone, company_name, visitor_type, custom_metadata, last_active)
+       VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+       ON CONFLICT (email) DO UPDATE
+         SET last_active = CURRENT_TIMESTAMP,
+             visitor_type = CASE WHEN excluded.visitor_type = 'website_visitor' AND $5 = 'quote_generator'
+                                 THEN 'quote_generator'
+                                 ELSE visitors.visitor_type END,
+             phone = COALESCE($3, visitors.phone),
+             custom_metadata = visitors.custom_metadata || $6
+       RETURNING id, visitor_type`,
+      [
+        visitorId,
+        email,
+        phone,
+        company,
+        visitorType,
+        JSON.stringify({ visitor_data: visitor_data || {} })
+      ]
+    );
+
+    const finalVisitorId = visitorResult.rows[0].id;
+    const finalVisitorType = visitorResult.rows[0].visitor_type;
+
+    // If this is a quote event, store quote details
+    if (isQuote) {
       const quoteResult = await pool.query(
         `INSERT INTO quotes (visitor_id, quote_details, quote_url)
          VALUES ($1, $2, $3)
          RETURNING id`,
-        [finalVisitorId, JSON.stringify(quote_data), quote_data.quote_url]
+        [finalVisitorId, JSON.stringify(quote_data), quote_data.quote_url || null]
       );
-
-      const quoteId = quoteResult.rows[0].id;
-
-      // Queue retargeting campaign job (will trigger after delay)
-      await retargetingQueue.add(
-        {
-          visitorId: finalVisitorId,
-          quoteId,
-          email,
-        },
-        {
-          delay: 2 * 60 * 60 * 1000, // 2 hours default
-          attempts: 3,
-          backoff: {
-            type: 'exponential',
-            delay: 2000,
-          },
-        }
-      );
-
-      res.json({ success: true, visitorId: finalVisitorId, quoteId });
-    } else {
-      res.json({ success: false, reason: 'Not a retargeting candidate' });
+      quoteId = quoteResult.rows[0].id;
     }
+
+    // Queue retargeting campaign job with appropriate delay
+    await retargetingQueue.add(
+      {
+        visitorId: finalVisitorId,
+        quoteId: quoteId,
+        email,
+        visitor_type: finalVisitorType,
+        is_quote: isQuote,
+      },
+      {
+        delay: campaignDelay,
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 2000,
+        },
+      }
+    );
+
+    console.log(`✓ ${visitorType} tracked: ${email} (delay: ${campaignDelay / 60000} min)`);
+
+    res.json({
+      success: true,
+      visitorId: finalVisitorId,
+      quoteId: quoteId,
+      visitor_type: finalVisitorType,
+      campaign_delay_minutes: campaignDelay / 60000
+    });
   } catch (error) {
     console.error('Webhook error:', error);
     res.status(500).json({ error: error.message });
@@ -170,7 +226,7 @@ app.post('/webhooks/visitor-event', apiKeyAuth.middleware(), async (req, res) =>
  * Bull job processor: Handle multiple job types (campaign generation and dispatch)
  */
 retargetingQueue.process(async (job) => {
-  const { action, visitorId, quoteId, email, campaignId } = job.data;
+  const { action, visitorId, quoteId, email, campaignId, visitor_type, is_quote } = job.data;
 
   try {
     // Job type 1: Generate campaign recommendations (default)
@@ -206,7 +262,7 @@ retargetingQueue.process(async (job) => {
         ),
       };
 
-      // Generate campaign recommendation
+      // Generate campaign recommendation (with visitor type context)
       const recommendation = await agent.generateCampaignRecommendation(
         visitor,
         quote,
@@ -216,6 +272,8 @@ retargetingQueue.process(async (job) => {
             (Date.now() - new Date(quote.generated_at)) / (1000 * 60 * 60 * 24)
           ),
           campaign_id: job.id,
+          visitor_type: visitor_type || 'website_visitor',
+          is_quote: is_quote || false,
         },
         operatorConfig
       );

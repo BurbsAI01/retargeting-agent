@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS visitors (
   phone VARCHAR,
   first_name VARCHAR,
   company_name VARCHAR,
+  visitor_type VARCHAR DEFAULT 'website_visitor',
   lifecycle_stage VARCHAR DEFAULT 'prospect',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
