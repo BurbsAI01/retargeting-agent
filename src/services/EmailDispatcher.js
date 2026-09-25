@@ -1,13 +1,17 @@
-const mailgun = require('node-mailgun').client({
-  username: 'api',
-  key: process.env.MAILGUN_API_KEY,
-});
+const Mailgun = require('mailgun.js');
+const FormData = require('form-data');
+
+const mailgun = new Mailgun(FormData);
 
 class EmailDispatcher {
   constructor(pool) {
     this.pool = pool;
     this.fromEmail = process.env.FROM_EMAIL || 'noreply@retargeting.app';
     this.fromName = process.env.FROM_NAME || 'Retargeting Team';
+    this.mg = mailgun.client({
+      username: 'api',
+      key: process.env.MAILGUN_API_KEY || 'test-key',
+    });
   }
 
   async dispatch(campaign, modifications) {
@@ -43,23 +47,20 @@ class EmailDispatcher {
         'tracking-opens': 'yes',
       };
 
-      // Use callback-based API since node-mailgun uses callbacks
-      return new Promise((resolve, reject) => {
-        mailgun.messages().send(mailgunData, (err, body) => {
-          if (err) {
-            console.error('Mailgun error:', err);
-            resolve({ success: false, error: err.message });
-          } else {
-            console.log(`Email sent to ${email}:`, body.id);
-            resolve({
-              success: true,
-              message_id: body.id,
-              recipient: email,
-              subject: subject,
-            });
-          }
-        });
-      });
+      try {
+        const domain = process.env.MAILGUN_DOMAIN || 'sandbox.mailgun.org';
+        const result = await this.mg.messages.create(domain, mailgunData);
+        console.log(`Email sent to ${email}:`, result.id);
+        return {
+          success: true,
+          message_id: result.id,
+          recipient: email,
+          subject: subject,
+        };
+      } catch (mailgunError) {
+        console.error('Mailgun error:', mailgunError);
+        return { success: false, error: mailgunError.message };
+      }
     } catch (error) {
       console.error('Email dispatch error:', error);
       return { success: false, error: error.message };
