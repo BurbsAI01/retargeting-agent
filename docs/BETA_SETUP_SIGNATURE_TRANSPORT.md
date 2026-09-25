@@ -35,85 +35,93 @@ API Key: sig_trans_7dff285ad79be438d0af08c938e2671cc0c9c3246d1479d8
 | **Week 3** | Conversion | Track completed bookings |
 | **Week 3** | Report | Generate metrics & ROI analysis |
 
+## Implementation Strategy
+
+**KEY ADVANTAGE:** Signature Transportation uses Quote Bot for quoting, so we don't need to add any code to their website. Quote Bot webhooks will automatically send us quote events.
+
+### Quote Bot Integration Flow
+
+```
+Quote Bot Account
+    ↓
+    └→ Quote generated
+       └→ Webhook fires
+          └→ https://your-domain/webhooks/quotebot
+             └→ Quote stored in Retargeting Agent
+                └→ Campaign generation starts (2-hour delay)
+                   └→ Email/SMS retargeting
+```
+
+---
+
 ## Next Steps
 
-### 1. Provide Integration Code to Signature Transportation
+### 1. Provide Quote Bot Setup Instructions
 
-Send them the integration guide:
+Share the Quote Bot integration guide:
 ```
-GET http://localhost:3000/beta/docs/integration
-```
-
-### 2. Add Tracking Pixel to Their Website
-
-They need to add this to their quote page:
-```html
-<script>
-window.retargetingConfig = {
-  apiKey: 'sig_trans_7dff285ad79be438d0af08c938e2671cc0c9c3246d1479d8',
-  appUrl: 'http://localhost:3000'
-};
-
-function trackQuoteGenerated(quoteData) {
-  fetch(window.retargetingConfig.appUrl + '/webhooks/visitor-event', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-Key': window.retargetingConfig.apiKey
-    },
-    body: JSON.stringify({
-      visitorId: quoteData.customerId || Date.now(),
-      email: quoteData.customerEmail,
-      phone: quoteData.customerPhone,
-      company: 'Signature Transportation',
-      event_type: 'quote_generated',
-      quote_data: {
-        quote_id: quoteData.id,
-        route: quoteData.route,
-        vehicle_type: quoteData.vehicleType,
-        amount: parseFloat(quoteData.totalPrice),
-        quote_url: window.location.href,
-        converted: false,
-        created_at: new Date().toISOString()
-      }
-    })
-  })
-  .catch(err => console.error('Tracking error:', err));
-}
-</script>
+https://your-domain/docs/quote-bot-integration
 ```
 
-### 3. Test Quote Tracking
+### 2. Configure Quote Bot Webhook
 
-Once integrated, test with a sample quote:
+They need to set this up in their Quote Bot account settings:
+
+**Webhook Configuration:**
+- URL: `https://your-domain.com/webhooks/quotebot`
+- Events: Quote Created, Quote Updated, Quote Abandoned
+- Method: POST
+
+### 3. Test Quote Bot Connection
+
+Verify the integration is working:
+
+Test the Quote Bot connection:
 
 ```bash
-curl -X POST http://localhost:3000/webhooks/visitor-event \
-  -H "X-API-Key: sig_trans_7dff285ad79be438d0af08c938e2671cc0c9c3246d1479d8" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "visitorId": "test-001",
-    "email": "customer@example.com",
-    "phone": "615-555-0001",
-    "company": "Signature Transportation",
-    "event_type": "quote_generated",
-    "quote_data": {
-      "quote_id": "SIG-TEST-001",
-      "route": "Nashville to Memphis",
-      "vehicle_type": "Sprinter Van",
-      "amount": 2500,
-      "quote_url": "https://signaturetransportation.com/quote/SIG-TEST-001",
-      "converted": false
-    }
-  }'
+curl -X GET http://localhost:3000/health/quotebot
 ```
 
 Expected Response:
 ```json
 {
+  "status": "ok",
+  "quotebot": "connected",
+  "timestamp": "2024-09-25T14:30:00.000Z"
+}
+```
+
+### 4. Test with Sample Quote
+
+They generate a test quote in Quote Bot's interface. When submitted, Quote Bot automatically sends a webhook to us.
+
+You should see in the logs:
+```
+✓ Quote Bot webhook processed: QB-123456
+  Visitor: customer@example.com
+  Amount: $2500
+  Stored as quote ID: ...
+```
+
+### 5. Backfill Historical Quotes (Optional)
+
+If they have existing unconverted quotes, sync them:
+
+```bash
+curl -X POST http://localhost:3000/admin/sync/quotebot \
+  -H "X-Admin-Key: admin_sig_trans_beta_2024_secure_key_change_in_production" \
+  -H "Content-Type: application/json" \
+  -d '{ "hoursBack": 168 }'
+```
+
+Response shows how many quotes were synced:
+```json
+{
   "success": true,
-  "visitorId": "test-001",
-  "quoteId": "..."
+  "total": 50,
+  "processed": 45,
+  "skipped": 5,
+  "errors": []
 }
 ```
 

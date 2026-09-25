@@ -13,6 +13,8 @@ const TwilioWebhookHandler = require('./webhooks/TwilioWebhookHandler');
 const FacebookWebhookHandler = require('./webhooks/FacebookWebhookHandler');
 const ConversionWebhookHandler = require('./webhooks/ConversionWebhookHandler');
 const APIKeyAuth = require('./middleware/apiKeyAuth');
+const QuoteBotService = require('./services/QuoteBotService');
+const QuoteBotWebhookHandler = require('./webhooks/QuoteBotWebhookHandler');
 const campaignsRouter = require('./routes/campaigns');
 const trackingRouter = require('./routes/tracking');
 const recoveryRouter = require('./routes/recovery');
@@ -51,6 +53,8 @@ const twilioWebhookHandler = new TwilioWebhookHandler(pool);
 const facebookWebhookHandler = new FacebookWebhookHandler(pool);
 const conversionWebhookHandler = new ConversionWebhookHandler(pool);
 const apiKeyAuth = new APIKeyAuth(pool);
+const quoteBotService = new QuoteBotService(process.env.QUOTE_BOT_API_KEY);
+const quoteBotWebhookHandler = new QuoteBotWebhookHandler(pool, process.env.QUOTE_BOT_API_KEY);
 
 // Mount routes
 app.use('/campaigns', campaignsRouter);
@@ -61,6 +65,48 @@ app.use('/beta', betaRouter(pool));
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+/**
+ * GET /health/quotebot
+ * Verify Quote Bot API connection is working
+ */
+app.get('/health/quotebot', async (req, res) => {
+  try {
+    const health = await quoteBotService.healthCheck();
+    if (health.healthy) {
+      res.json({ status: 'ok', quotebot: 'connected', timestamp: new Date().toISOString() });
+    } else {
+      res.status(503).json({ status: 'error', quotebot: 'disconnected', error: health.error });
+    }
+  } catch (error) {
+    res.status(503).json({ status: 'error', error: error.message });
+  }
+});
+
+/**
+ * POST /admin/sync/quotebot
+ * Manually sync recent quotes from Quote Bot
+ * Useful for backfilling or catching missed webhooks
+ */
+app.post('/admin/sync/quotebot', async (req, res) => {
+  const adminKey = req.headers['x-admin-key'];
+  if (adminKey !== process.env.ADMIN_API_KEY) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const { hoursBack } = req.body;
+    const results = await quoteBotWebhookHandler.syncRecentQuotes(hoursBack || 24);
+    res.json({
+      success: true,
+      message: `Quote Bot sync completed`,
+      ...results
+    });
+  } catch (error) {
+    console.error('Quote Bot sync error:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 /**
@@ -490,6 +536,21 @@ app.post('/webhooks/conversion/:platform', apiKeyAuth.middleware(), async (req, 
     res.json(result);
   } catch (error) {
     console.error(`${platform} webhook error:`, error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /webhooks/quotebot
+ * Quote Bot webhook for quote generation events
+ * Quote Bot sends this when a customer generates a quote
+ */
+app.post('/webhooks/quotebot', async (req, res) => {
+  try {
+    const result = await quoteBotWebhookHandler.handleWebhook(req.body);
+    res.json(result);
+  } catch (error) {
+    console.error('Quote Bot webhook error:', error);
     res.status(500).json({ error: error.message });
   }
 });
