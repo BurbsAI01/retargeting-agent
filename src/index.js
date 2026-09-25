@@ -12,9 +12,11 @@ const MailgunWebhookHandler = require('./webhooks/MailgunWebhookHandler');
 const TwilioWebhookHandler = require('./webhooks/TwilioWebhookHandler');
 const FacebookWebhookHandler = require('./webhooks/FacebookWebhookHandler');
 const ConversionWebhookHandler = require('./webhooks/ConversionWebhookHandler');
+const APIKeyAuth = require('./middleware/apiKeyAuth');
 const campaignsRouter = require('./routes/campaigns');
 const trackingRouter = require('./routes/tracking');
 const recoveryRouter = require('./routes/recovery');
+const betaRouter = require('./routes/beta');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -48,11 +50,13 @@ const mailgunWebhookHandler = new MailgunWebhookHandler(pool);
 const twilioWebhookHandler = new TwilioWebhookHandler(pool);
 const facebookWebhookHandler = new FacebookWebhookHandler(pool);
 const conversionWebhookHandler = new ConversionWebhookHandler(pool);
+const apiKeyAuth = new APIKeyAuth(pool);
 
 // Mount routes
 app.use('/campaigns', campaignsRouter);
 app.use('/tracking', trackingRouter);
 app.use('/recovery', recoveryRouter);
+app.use('/beta', betaRouter(pool));
 
 // Health check
 app.get('/health', (req, res) => {
@@ -62,7 +66,7 @@ app.get('/health', (req, res) => {
 /**
  * Webhook: Receive visitor event (quote generated, no conversion)
  */
-app.post('/webhooks/visitor-event', async (req, res) => {
+app.post('/webhooks/visitor-event', apiKeyAuth.middleware(), async (req, res) => {
   try {
     const { visitorId, email, phone, company, event_type, quote_data } =
       req.body;
@@ -479,7 +483,7 @@ app.post('/webhooks/linkedin', async (req, res) => {
  * POST /webhooks/conversion
  * Generic conversion webhook for custom platforms
  */
-app.post('/webhooks/conversion/:platform', async (req, res) => {
+app.post('/webhooks/conversion/:platform', apiKeyAuth.middleware(), async (req, res) => {
   try {
     const { platform } = req.params;
     const result = await conversionWebhookHandler.handleCustomConversion(platform, req.body);

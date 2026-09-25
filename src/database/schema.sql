@@ -157,6 +157,52 @@ CREATE TABLE IF NOT EXISTS dispatch_history (
 
 CREATE INDEX IF NOT EXISTS idx_dispatch_campaign ON dispatch_history(campaign_id);
 
+-- Beta Customers Table
+CREATE TABLE IF NOT EXISTS beta_customers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name VARCHAR NOT NULL,
+  email VARCHAR UNIQUE NOT NULL,
+  company_name VARCHAR,
+  contact_person VARCHAR,
+  phone VARCHAR,
+  tier VARCHAR DEFAULT 'beta',
+  status VARCHAR DEFAULT 'pending_signature',
+  agreement_signed_at TIMESTAMP,
+  agreement_version VARCHAR,
+  signed_by_name VARCHAR,
+  signed_by_email VARCHAR,
+  signature_token VARCHAR UNIQUE,
+  signature_token_expires_at TIMESTAMP,
+  api_key_id UUID,
+  rate_limit INT DEFAULT 1000,
+  allowed_channels VARCHAR[] DEFAULT ARRAY['email']::VARCHAR[],
+  onboarded_at TIMESTAMP,
+  notes JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_beta_customers_status ON beta_customers(status);
+CREATE INDEX IF NOT EXISTS idx_beta_customers_email ON beta_customers(email);
+CREATE INDEX IF NOT EXISTS idx_beta_customers_signature_token ON beta_customers(signature_token);
+
+-- API Keys Table
+CREATE TABLE IF NOT EXISTS api_keys (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  beta_customer_id UUID REFERENCES beta_customers(id) ON DELETE CASCADE,
+  name VARCHAR NOT NULL,
+  key_prefix VARCHAR,
+  key_hash VARCHAR UNIQUE NOT NULL,
+  is_active BOOLEAN DEFAULT true,
+  last_used_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  expires_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_customer ON api_keys(beta_customer_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(is_active);
+CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+
 -- Set up row-level security (optional, for multi-tenant support)
 ALTER TABLE visitors OWNER TO postgres;
 ALTER TABLE quotes OWNER TO postgres;
@@ -168,3 +214,5 @@ ALTER TABLE behavior_events OWNER TO postgres;
 ALTER TABLE quote_recovery_links OWNER TO postgres;
 ALTER TABLE campaign_performance OWNER TO postgres;
 ALTER TABLE dispatch_history OWNER TO postgres;
+ALTER TABLE beta_customers OWNER TO postgres;
+ALTER TABLE api_keys OWNER TO postgres;
